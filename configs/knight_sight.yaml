@@ -1,0 +1,5 @@
+names:
+  0: license_plate
+path: E:\deepsight\KnightSight_Uniform_Dataset
+train: split_by_scene/train/images
+val: split_by_scene/val/images

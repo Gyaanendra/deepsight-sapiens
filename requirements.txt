@@ -1,0 +1,9 @@
+streamlit
+ultralytics
+fast-plate-ocr[onnx]
+opencv-python
+pillow
+numpy
+torch
+torchvision
+matplotlib
