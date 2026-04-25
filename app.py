@@ -110,6 +110,12 @@ def pad_crop(img, px1, py1, px2, py2, pad=5):
     h, w = img.shape[:2]
     return img[max(0,py1-pad):min(h,py2+pad), max(0,px1-pad):min(w,px2+pad)]
 
+def upscale(crop, scale=4):
+    """Lanczos upscale — improves OCR on small plate crops."""
+    h, w = crop.shape[:2]
+    if h == 0 or w == 0: return crop
+    return cv2.resize(crop, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_ocr, easy_ocr):
     if use_night:
@@ -139,9 +145,10 @@ def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_oc
             pconf = float(pb.conf[0])
             plate_crop = pad_crop(vcrop, px1, py1, px2, py2)
             if plate_crop.size == 0: continue
+            plate_crop_up = upscale(plate_crop, scale=4)
 
-            # 3. OCR
-            ocr_t = do_ocr(plate_crop, ocr_name, fast_ocr, easy_ocr)
+            # 3. OCR on upscaled crop
+            ocr_t = do_ocr(plate_crop_up, ocr_name, fast_ocr, easy_ocr)
             detections.append({
                 "conf": pconf, "ocr": ocr_t,
                 "vehicle_crop": vcrop.copy(),
@@ -162,7 +169,8 @@ def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_oc
             pconf = float(pb.conf[0])
             plate_crop = pad_crop(img_bgr, px1, py1, px2, py2)
             if plate_crop.size == 0: continue
-            ocr_t = do_ocr(plate_crop, ocr_name, fast_ocr, easy_ocr)
+            plate_crop_up = upscale(plate_crop, scale=4)
+            ocr_t = do_ocr(plate_crop_up, ocr_name, fast_ocr, easy_ocr)
             detections.append({
                 "conf": pconf, "ocr": ocr_t,
                 "vehicle_crop": None,
@@ -194,7 +202,7 @@ with st.sidebar:
 5. 🔄 Fallback → full-image
 """)
 
-# ── Load models once ──────────────────────────────────────────────────────────
+# ── Load models once (lazy EasyOCR to save RAM on HF Spaces) ─────────────────
 plate_model   = load_plate(ONNX_PATH if "ONNX" in engine else PT_PATH)
 vehicle_model = load_vehicle()
 fast_ocr      = load_fast_ocr()

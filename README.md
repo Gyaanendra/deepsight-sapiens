@@ -1,40 +1,51 @@
+---
+title: KnightSight EdgeVision ANPR
+emoji: 🚗
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+sdk_version: 1.32.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
 # 🚗 KnightSight EdgeVision: ANPR Pipeline
 
-Professional Vehicle Intelligence and License Plate Recognition system optimized for Edge deployment.
+Automatic Number Plate Recognition system built for the KnightSight EdgeVision Challenge.
+
+**Pipeline:** Detect Vehicle → Crop ROI → Detect License Plate → OCR
 
 ## 📁 Directory Structure
-- `app.py`: Main Streamlit Inference Dashboard.
-- `configs/`: Dataset and model configuration files (YAML).
-- `data/`: Raw and processed datasets.
-- `docs/`: PDFs, project documentation, and backups.
-- `models/`: Downloaded base models (e.g., YOLOv11n).
-- `notebooks/`: Training and data augmentation research.
-- `runs/`: Training outputs, logs, and fine-tuned weights.
-- `scripts/`: Utility scripts (Export, Inspections).
-- `tests/`: Module testing and validation scripts.
+- `app.py` — Streamlit inference dashboard
+- `models/` — YOLO weights (best.pt, best.onnx, yolo11n.pt)
+- `configs/` — Dataset and training configuration
+- `runs/` — Training outputs, metrics, and weights
+- `scripts/` — Export and utility scripts
+- `notebooks/` — Training and augmentation research
+- `explain.md` — Full technical report
 
-## 🚀 How to Run
+## 🚀 How to Run Locally
 
-### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. Run Inference Dashboard
-```bash
 streamlit run app.py
 ```
 
-### 3. Edge Optimization (Export to ONNX)
-```bash
-python scripts/export_onnx.py
-```
-
 ## 🛠️ Key Components
-- **Vehicle Detection**: YOLOv11 nano (COCO filtered).
-- **Plate Detection**: Custom-tuned YOLOv11 nano.
-- **OCR Engine**: EasyOCR with Grayscale + CLAHE Pre-processing.
-- **Robustness**: Integrated Night Vision enhancement.
+- **Vehicle Detection**: YOLOv11n (COCO pre-trained)
+- **Plate Detection**: Custom fine-tuned YOLOv11n (mAP@50: 99.49%)
+- **OCR Engine**: Fast-Plate-OCR / EasyOCR
+- **Night Vision**: CLAHE enhancement
+
+## 📊 Model Performance
+| Metric | Value |
+|---|---|
+| mAP@50 | 99.49% |
+| mAP@50-95 | 72.91% |
+| Precision | 99.90% |
+| Recall | 99.45% |
+| F1 Score | 99.67% |
 
 ---
-*Developed for KnightSight EdgeVision Challenge.*
+*Developed for KnightSight EdgeVision Challenge · Ultralytics + Streamlit*
