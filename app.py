@@ -53,9 +53,9 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- Constants & Paths ---
-PT_MODEL_PATH = r"E:\deepsight\runs\detect\KnightSight_Local\RTX4060_Uniform_v1\weights\best.pt"
-ONNX_MODEL_PATH = r"E:\deepsight\runs\detect\KnightSight_Local\RTX4060_Uniform_v1\weights\best.onnx"
-VEHICLE_MODEL_PATH = r"models/yolo11n.pt"
+PT_MODEL_PATH = "models/best.pt"
+ONNX_MODEL_PATH = "models/best.onnx"
+VEHICLE_MODEL_PATH = "models/yolo11n.pt"
 
 # --- Cached Loaders ---
 @st.cache_resource
@@ -259,7 +259,7 @@ else:
     """)
     
     # Show sample if possible (optional)
-    st.image(r"E:\deepsight\KnightSight_Uniform_Dataset\images\0a70a4b1-65c0-49d4-a09a-ec62b9fe20ca_v1.jpg", caption="Sample Input", width=600)
+    # st.image("docs/visualizations/training_metrics.png", caption="Training Metrics", width=600)
 
 footer_html = """<div style='text-align: center;'>
 <p>Developed for KnightSight Challenge | Powered by Ultralytics & Streamlit</p>
