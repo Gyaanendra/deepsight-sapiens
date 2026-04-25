@@ -82,23 +82,16 @@ def load_vehicle(): return YOLO(VMODEL)
 def load_fast_ocr(): return LicensePlateRecognizer("cct-s-v2-global-model")
 
 @st.cache_resource
-def load_easy_ocr(): return easyocr.Reader(["en"], gpu=False)
+def load_fast_ocr(): return LicensePlateRecognizer("cct-s-v2-global-model")
 
 # ── OCR dispatch ─────────────────────────────────────────────────────────────
-def do_ocr(crop_bgr, engine_name, fast_ocr, easy_ocr):
-    if engine_name == "EasyOCR":
-        try:
-            res = easy_ocr.readtext(crop_bgr, detail=0, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-            return "".join(res).upper().strip()
-        except Exception:
-            return ""
-    else:
-        try:
-            res = fast_ocr.run(crop_bgr)
-            txt = res[0].plate if (isinstance(res, list) and res) else str(res)
-            return txt.upper().replace(".", "").replace("-", "").replace("_", "").strip()
-        except Exception:
-            return ""
+def do_ocr(crop_bgr, fast_ocr):
+    try:
+        res = fast_ocr.run(crop_bgr)
+        txt = res[0].plate if (isinstance(res, list) and res) else str(res)
+        return txt.upper().replace(".", "").replace("-", "").replace("_", "").strip()
+    except Exception:
+        return ""
 
 def apply_clahe(img):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -106,18 +99,20 @@ def apply_clahe(img):
     cl = cv2.createCLAHE(3.0, (8, 8)).apply(l)
     return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
 
-def pad_crop(img, px1, py1, px2, py2, pad=5):
+def pad_crop(img, px1, py1, px2, py2, pad=15):
     h, w = img.shape[:2]
     return img[max(0,py1-pad):min(h,py2+pad), max(0,px1-pad):min(w,px2+pad)]
 
 def upscale(crop, scale=4):
-    """Lanczos upscale — improves OCR on small plate crops."""
+    """Lanczos upscale + denoising — improves OCR on small plate crops."""
     h, w = crop.shape[:2]
     if h == 0 or w == 0: return crop
-    return cv2.resize(crop, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
+    # Apply bilateral filter to denoise while keeping edges sharp
+    denoised = cv2.bilateralFilter(crop, d=9, sigmaColor=75, sigmaSpace=75)
+    return cv2.resize(denoised, (w * scale, h * scale), interpolation=cv2.INTER_LANCZOS4)
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
-def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_ocr, easy_ocr):
+def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, fast_ocr):
     if use_night:
         img_bgr = apply_clahe(img_bgr)
     annotated = img_bgr.copy()
@@ -148,7 +143,7 @@ def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_oc
             plate_crop_up = upscale(plate_crop, scale=4)
 
             # 3. OCR on upscaled crop
-            ocr_t = do_ocr(plate_crop_up, ocr_name, fast_ocr, easy_ocr)
+            ocr_t = do_ocr(plate_crop_up, fast_ocr)
             detections.append({
                 "conf": pconf, "ocr": ocr_t,
                 "vehicle_crop": vcrop.copy(),
@@ -170,7 +165,7 @@ def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_oc
             plate_crop = pad_crop(img_bgr, px1, py1, px2, py2)
             if plate_crop.size == 0: continue
             plate_crop_up = upscale(plate_crop, scale=4)
-            ocr_t = do_ocr(plate_crop_up, ocr_name, fast_ocr, easy_ocr)
+            ocr_t = do_ocr(plate_crop_up, fast_ocr)
             detections.append({
                 "conf": pconf, "ocr": ocr_t,
                 "vehicle_crop": None,
@@ -189,7 +184,7 @@ with st.sidebar:
     st.markdown("## ⚙️ KnightSight Controls")
     st.markdown("---")
     engine = st.selectbox("🔧 Plate Model Engine", ["ONNX (Optimized)", "PyTorch (Original)"])
-    ocr_engine_name = st.selectbox("🔤 OCR Engine", ["Fast-Plate-OCR", "EasyOCR"])
+    ocr_engine_name = "Fast-Plate-OCR" # Hardcoded since it's the only one left
     conf_thr = st.slider("🎯 Plate Confidence", 0.10, 1.0, 0.40, 0.05)
     use_night = st.checkbox("🌙 Night Vision (CLAHE)", value=False)
     st.markdown("---")
@@ -206,7 +201,6 @@ with st.sidebar:
 plate_model   = load_plate(ONNX_PATH if "ONNX" in engine else PT_PATH)
 vehicle_model = load_vehicle()
 fast_ocr      = load_fast_ocr()
-easy_ocr      = load_easy_ocr() if ocr_engine_name == "EasyOCR" else None
 
 # ── Title ─────────────────────────────────────────────────────────────────────
 st.markdown("# 🚗 KnightSight EdgeVision ANPR")
@@ -229,7 +223,7 @@ with img_tab:
         with st.spinner("Running ANPR pipeline…"):
             annotated, dets, inf_ms, n_vehicles = run_pipeline(
                 img_bgr, plate_model, vehicle_model,
-                conf_thr, use_night, ocr_engine_name, fast_ocr, easy_ocr
+                conf_thr, use_night, fast_ocr
             )
 
         # ── Inference time banner ─────────────────────────────────────────────
@@ -263,7 +257,7 @@ with img_tab:
 
         with col1:
             st.markdown("<div class='sec-header'>Annotated Frame</div>", unsafe_allow_html=True)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), width='stretch')
 
         with col2:
             st.markdown("<div class='sec-header'>Detections</div>", unsafe_allow_html=True)
@@ -282,11 +276,11 @@ with img_tab:
                 if d["vehicle_crop"] is not None:
                     st.markdown("<div class='sec-header'>Vehicle Crop</div>", unsafe_allow_html=True)
                     st.image(cv2.cvtColor(d["vehicle_crop"], cv2.COLOR_BGR2RGB),
-                             use_container_width=True)
+                             width='stretch')
 
                 st.markdown("<div class='sec-header'>Plate Crop</div>", unsafe_allow_html=True)
                 st.image(cv2.cvtColor(d["plate_crop"], cv2.COLOR_BGR2RGB),
-                         use_container_width=True)
+                         width='stretch')
 
                 st.markdown(f"<div class='ocr-text'>{d['ocr'] or '???'}</div>", unsafe_allow_html=True)
                 st.caption(f"Confidence: {d['conf']:.2f}  ·  OCR: {ocr_engine_name}")
@@ -346,12 +340,12 @@ with vid_tab:
 
                 annotated, dets, inf_ms, n_v = run_pipeline(
                     frame, plate_model, vehicle_model,
-                    conf_thr, use_night, ocr_engine_name, fast_ocr, easy_ocr
+                    conf_thr, use_night, fast_ocr
                 )
 
                 frame_display.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
                                     caption=f"Frame {frame_idx}/{total_frames} · {inf_ms:.0f}ms",
-                                    use_container_width=True)
+                                    width='stretch')
 
                 metrics_row.markdown(f"""
 <div class="timer-banner">
