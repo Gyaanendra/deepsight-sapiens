@@ -257,7 +257,7 @@ with img_tab:
 
         with col1:
             st.markdown("<div class='sec-header'>Annotated Frame</div>", unsafe_allow_html=True)
-            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), width='stretch')
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_column_width=True)
 
         with col2:
             st.markdown("<div class='sec-header'>Detections</div>", unsafe_allow_html=True)
@@ -276,11 +276,11 @@ with img_tab:
                 if d["vehicle_crop"] is not None:
                     st.markdown("<div class='sec-header'>Vehicle Crop</div>", unsafe_allow_html=True)
                     st.image(cv2.cvtColor(d["vehicle_crop"], cv2.COLOR_BGR2RGB),
-                             width='stretch')
+                             use_column_width=True)
 
                 st.markdown("<div class='sec-header'>Plate Crop</div>", unsafe_allow_html=True)
                 st.image(cv2.cvtColor(d["plate_crop"], cv2.COLOR_BGR2RGB),
-                         width='stretch')
+                         use_column_width=True)
 
                 st.markdown(f"<div class='ocr-text'>{d['ocr'] or '???'}</div>", unsafe_allow_html=True)
                 st.caption(f"Confidence: {d['conf']:.2f}  ·  OCR: {ocr_engine_name}")
@@ -345,7 +345,7 @@ with vid_tab:
 
                 frame_display.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
                                     caption=f"Frame {frame_idx}/{total_frames} · {inf_ms:.0f}ms",
-                                    width='stretch')
+                                    use_column_width=True)
 
                 metrics_row.markdown(f"""
 <div class="timer-banner">
