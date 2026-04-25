@@ -2,9 +2,14 @@ import os
 import json
 import time
 import cv2
+import torch
 from pathlib import Path
 from ultralytics import YOLO
 from tqdm import tqdm
+
+# GPU device selection
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"{'🔥 Using GPU: ' + torch.cuda.get_device_name(0) if DEVICE == 'cuda' else '⚠️  Running on CPU'}")
 
 # Configuration
 TEAM_NAME = "Sapines_II"
@@ -52,7 +57,7 @@ def create_submission():
         plate_found = False
         
         # 1. Detect vehicles
-        v_res = vehicle_model.predict(img, conf=0.3, classes=VCL, verbose=False)
+        v_res = vehicle_model.predict(img, conf=0.3, classes=VCL, verbose=False, device=DEVICE)
         v_boxes = [b.xyxy[0].cpu().numpy().astype(int) for b in v_res[0].boxes] if len(v_res) > 0 else []
         
         for vb in v_boxes:
@@ -61,7 +66,7 @@ def create_submission():
             if vcrop.size == 0: continue
             
             # 2. Detect plates inside vehicle crop
-            p_res = plate_model.predict(vcrop, conf=0.1, verbose=False)
+            p_res = plate_model.predict(vcrop, conf=0.1, verbose=False, device=DEVICE)
             if len(p_res) > 0 and len(p_res[0].boxes) > 0:
                 plate_found = True
                 for pb in p_res[0].boxes:
@@ -71,7 +76,7 @@ def create_submission():
                     
         # 3. Fallback: Detect plate on full image if no vehicle had a plate
         if not plate_found:
-            p_res = plate_model.predict(img, conf=0.1, verbose=False)
+            p_res = plate_model.predict(img, conf=0.1, verbose=False, device=DEVICE)
             if len(p_res) > 0 and len(p_res[0].boxes) > 0:
                 for pb in p_res[0].boxes:
                     px1, py1, px2, py2 = pb.xyxy[0].cpu().numpy().astype(int)
@@ -80,7 +85,7 @@ def create_submission():
         # 4. Fallback: Rotate 90 degrees clockwise if still no plate found
         if not all_boxes:
             img_90 = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-            p_res_90 = plate_model.predict(img_90, conf=0.1, verbose=False)
+            p_res_90 = plate_model.predict(img_90, conf=0.1, verbose=False, device=DEVICE)
             if len(p_res_90) > 0 and len(p_res_90[0].boxes) > 0:
                 H, W = img.shape[:2]
                 for pb in p_res_90[0].boxes:

@@ -1,12 +1,11 @@
 streamlit>=1.32.0
 ultralytics>=8.3.0
 fast-plate-ocr[onnx]
-easyocr
 opencv-python-headless
 pillow
 numpy
 torch
 torchvision
-matplotlib
-onnxruntime
---extra-index-url https://download.pytorch.org/whl/cpu
+onnxruntime-gpu
+python-dotenv
+requests
