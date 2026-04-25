@@ -5,8 +5,8 @@ easyocr
 opencv-python-headless
 pillow
 numpy
-torch==2.2.2+cpu
-torchvision==0.17.2+cpu
+torch
+torchvision
 matplotlib
 onnxruntime
 --extra-index-url https://download.pytorch.org/whl/cpu
