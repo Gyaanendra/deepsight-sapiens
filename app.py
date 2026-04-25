@@ -1,267 +1,393 @@
 import streamlit as st
 import cv2
-import torch
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
 from fast_plate_ocr import LicensePlateRecognizer
+import easyocr
 import time
+import tempfile
 import os
 
-# Set page configuration
 st.set_page_config(
-    page_title="KnightSight | EdgeVision ANPR",
+    page_title="KnightSight | ANPR",
     page_icon="🚗",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Premium Look
 st.markdown("""
-    <style>
-    .main {
-        background-color: #0e1117;
-    }
-    .stHeader {
-        background: linear-gradient(90deg, #00C9FF 0%, #92FE9D 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: bold;
-    }
-    .metric-card {
-        background: rgba(255, 255, 255, 0.05);
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        text-align: center;
-    }
-    .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        background: linear-gradient(45deg, #00C9FF, #92FE9D);
-        color: black;
-        font-weight: bold;
-        border: none;
-    }
-    .ocr-result {
-        font-size: 24px;
-        font-weight: bold;
-        color: #92FE9D;
-        font-family: 'Courier New', Courier, monospace;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@600&display=swap');
 
-# --- Constants & Paths ---
-PT_MODEL_PATH = "models/best.pt"
-ONNX_MODEL_PATH = "models/best.onnx"
-VEHICLE_MODEL_PATH = "models/yolo11n.pt"
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.main { background: #080c14; }
 
-# --- Cached Loaders ---
+/* Inference timer banner */
+.timer-banner {
+    background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    border: 1px solid rgba(0,201,255,0.3);
+    border-radius: 12px;
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 20px;
+    margin-bottom: 16px;
+}
+.timer-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2.2rem; font-weight: 700;
+    background: linear-gradient(90deg,#00c9ff,#92fe9d);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.timer-label { color: #7a9db5; font-size: 0.75rem; letter-spacing: 2px; text-transform: uppercase; }
+
+/* Crop cards */
+.crop-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px; padding: 12px; margin-bottom: 10px;
+}
+.ocr-text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.8rem; font-weight: 700; letter-spacing: 6px;
+    background: linear-gradient(90deg,#00c9ff,#92fe9d);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.pill {
+    display: inline-block; padding: 3px 10px; border-radius: 20px;
+    font-size: 10px; font-weight: 600; letter-spacing: 1px;
+    text-transform: uppercase; margin-bottom: 6px;
+}
+.pill-vehicle { background: rgba(255,140,0,0.2); color: #ff8c00; border: 1px solid #ff8c00; }
+.pill-fallback { background: rgba(0,180,255,0.2); color: #00b4ff; border: 1px solid #00b4ff; }
+
+/* Section headers */
+.sec-header { font-size: 0.7rem; color:#4a6fa5; letter-spacing:3px; text-transform:uppercase; margin-bottom:8px; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Constants ────────────────────────────────────────────────────────────────
+PT_PATH   = "models/best.pt"
+ONNX_PATH = "models/best.onnx"
+VMODEL    = "models/yolo11n.pt"
+VCL       = [2, 3, 5, 7]   # car, motorcycle, bus, truck
+
+# ── Loaders (cached) ─────────────────────────────────────────────────────────
 @st.cache_resource
-def load_models(model_path):
-    try:
-        # Load custom plate detector (works for both .pt and .onnx)
-        plate_model = YOLO(model_path, task='detect')
-        # Load standard vehicle detector
-        vehicle_model = YOLO(VEHICLE_MODEL_PATH)
-        return plate_model, vehicle_model
-    except Exception as e:
-        st.error(f"Error loading models from {model_path}: {e}")
-        return None, None
-
+def load_plate(path): return YOLO(path, task="detect")
 
 @st.cache_resource
-def load_ocr():
-    # specialized plate OCR model
-    return LicensePlateRecognizer('cct-s-v2-global-model')
+def load_vehicle(): return YOLO(VMODEL)
 
-# --- Helper Functions ---
-def apply_night_vision(img):
+@st.cache_resource
+def load_fast_ocr(): return LicensePlateRecognizer("cct-s-v2-global-model")
+
+@st.cache_resource
+def load_easy_ocr(): return easyocr.Reader(["en"], gpu=False)
+
+# ── OCR dispatch ─────────────────────────────────────────────────────────────
+def do_ocr(crop_bgr, engine_name, fast_ocr, easy_ocr):
+    if engine_name == "EasyOCR":
+        try:
+            res = easy_ocr.readtext(crop_bgr, detail=0, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+            return "".join(res).upper().strip()
+        except Exception:
+            return ""
+    else:
+        try:
+            res = fast_ocr.run(crop_bgr)
+            txt = res[0].plate if (isinstance(res, list) and res) else str(res)
+            return txt.upper().replace(".", "").replace("-", "").replace("_", "").strip()
+        except Exception:
+            return ""
+
+def apply_clahe(img):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    cl = clahe.apply(l)
-    limg = cv2.merge((cl, a, b))
-    return cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+    cl = cv2.createCLAHE(3.0, (8, 8)).apply(l)
+    return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
 
-def letterbox_image(image, expected_size):
-    """Resize image with padding to maintain aspect ratio."""
-    ih, iw = image.shape[:2]
-    ew, eh = expected_size, expected_size
-    scale = min(eh / ih, ew / iw)
-    nh = int(ih * scale)
-    nw = int(iw * scale)
+def pad_crop(img, px1, py1, px2, py2, pad=5):
+    h, w = img.shape[:2]
+    return img[max(0,py1-pad):min(h,py2+pad), max(0,px1-pad):min(w,px2+pad)]
 
-    image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_CUBIC)
-    # Create a new gray background image
-    new_img = np.full((eh, ew, 3), 114, dtype=np.uint8)
-    # Paste the original image into the center
-    dy = (eh - nh) // 2
-    dx = (ew - nw) // 2
-    new_img[dy:dy+nh, dx:dx+nw, :] = image
-    return new_img, (dy, dx, scale)
+# ── Core pipeline ─────────────────────────────────────────────────────────────
+def run_pipeline(img_bgr, plate_m, vehicle_m, conf, use_night, ocr_name, fast_ocr, easy_ocr):
+    if use_night:
+        img_bgr = apply_clahe(img_bgr)
+    annotated = img_bgr.copy()
+    detections = []
+    t0 = time.time()
 
-def run_pipeline(image, plate_model, vehicle_model, ocr_engine, conf_threshold, do_vehicle_det, use_night_mode):
-    results_data = []
-    
-    # 1. Convert and Letterbox
-    img_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    img_ready, (dy, dx, scale) = letterbox_image(img_bgr, 640)
-    
-    if use_night_mode:
-        img_ready = apply_night_vision(img_ready)
-        
-    annotated_img = img_ready.copy()
-    start_time = time.time()
-    
-    # 2. Vehicle Detection
-    if do_vehicle_det:
-        v_results = vehicle_model.predict(img_ready, conf=0.25, classes=[2, 3, 5, 7], verbose=False)
-        for v in v_results[0].boxes:
-            v_box = v.xyxy[0].cpu().numpy().astype(int)
-            cv2.rectangle(annotated_img, (v_box[0], v_box[1]), (v_box[2], v_box[3]), (255, 100, 0), 2)
-    
-    # 3. Plate Detection
-    p_results = plate_model.predict(img_ready, conf=conf_threshold, verbose=False)
-    inference_time = (time.time() - start_time) * 1000 
-    
-    padding_pct = 0.05 # fast-plate-ocr likes cleaner but slightly padded crops
-    
-    for p in p_results[0].boxes:
-        p_box = p.xyxy[0].cpu().numpy().astype(int)
-        p_conf = p.conf[0].item()
-        
-        # Crop from the same 'img_ready' used for detection (640x640)
-        h_ready, w_ready = img_ready.shape[:2]
-        pad_x = int((p_box[2] - p_box[0]) * padding_pct)
-        pad_y = int((p_box[3] - p_box[1]) * padding_pct)
-        
-        x1 = max(0, p_box[0] - pad_x)
-        y1 = max(0, p_box[1] - pad_y)
-        x2 = min(w_ready, p_box[2] + pad_x)
-        y2 = min(h_ready, p_box[3] + pad_y)
-        
-        crop = img_ready[y1:y2, x1:x2]
-        
-        # Safety check: skip if crop is empty
-        if crop is None or crop.size == 0:
-            continue
-            
-        ocr_text = ""
-        try:
-            # fast-plate-ocr returns a list of PlatePrediction objects
-            ocr_results = ocr_engine.run(crop)
-            
-            if isinstance(ocr_results, list) and len(ocr_results) > 0:
-                # Access the .plate attribute of the first prediction
-                ocr_text = ocr_results[0].plate
-            else:
-                ocr_text = str(ocr_results)
-            
-            # Clean: Uppercase, remove noise
-            ocr_text = str(ocr_text).upper().replace(".", "").replace("-", "").replace("_", "").strip()
-        except Exception:
-            ocr_text = ""
+    # 1. Vehicle detection
+    v_res = vehicle_m.predict(img_bgr, conf=0.3, classes=VCL, verbose=False)
+    v_boxes = [b.xyxy[0].cpu().numpy().astype(int) for b in v_res[0].boxes]
 
-        results_data.append({
-            "Box": [x1, y1, x2, y2],
-            "Conf": p_conf,
-            "OCR": ocr_text,
-            "Crop": crop
-        })
-        
-        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
-        label = f"PLATE {p_conf:.2f} | {ocr_text}"
-        cv2.putText(annotated_img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    plate_found = False
+    for vb in v_boxes:
+        vx1, vy1, vx2, vy2 = vb
+        cv2.rectangle(annotated, (vx1, vy1), (vx2, vy2), (255, 140, 0), 2)
+        cv2.putText(annotated, "Vehicle", (vx1, vy1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 140, 0), 2)
+        vcrop = img_bgr[vy1:vy2, vx1:vx2]
+        if vcrop.size == 0: continue
 
-    return annotated_img, results_data, inference_time
+        # 2. Plate in vehicle crop
+        p_res = plate_m.predict(vcrop, conf=conf, verbose=False)
+        for pb in p_res[0].boxes:
+            plate_found = True
+            px1, py1, px2, py2 = pb.xyxy[0].cpu().numpy().astype(int)
+            pconf = float(pb.conf[0])
+            plate_crop = pad_crop(vcrop, px1, py1, px2, py2)
+            if plate_crop.size == 0: continue
 
-# --- Sidebar ---
-st.sidebar.title("⚙️ Control Panel")
-st.sidebar.markdown("---")
-uploaded_file = st.sidebar.file_uploader("📤 Upload Vehicle Image", type=["jpg", "jpeg", "png"])
+            # 3. OCR
+            ocr_t = do_ocr(plate_crop, ocr_name, fast_ocr, easy_ocr)
+            detections.append({
+                "conf": pconf, "ocr": ocr_t,
+                "vehicle_crop": vcrop.copy(),
+                "plate_crop": plate_crop.copy(),
+                "source": "vehicle"
+            })
+            ax1, ay1 = vx1+px1, vy1+py1
+            ax2, ay2 = vx1+px2, vy1+py2
+            cv2.rectangle(annotated, (ax1, ay1), (ax2, ay2), (0, 255, 80), 3)
+            cv2.putText(annotated, f"{ocr_t} {pconf:.2f}",
+                        (ax1, ay1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 80), 2)
 
-st.sidebar.markdown("### 🔥 Model Settings")
-model_format = st.sidebar.selectbox("📦 Engine", ["ONNX (Optimized)", "PyTorch (Original)"])
-conf_threshold = st.sidebar.slider("🎯 Confidence", 0.1, 1.0, 0.45)
+    # 4. Fallback — direct plate detect on full image
+    if not plate_found:
+        p_res = plate_m.predict(img_bgr, conf=conf, verbose=False)
+        for pb in p_res[0].boxes:
+            px1, py1, px2, py2 = pb.xyxy[0].cpu().numpy().astype(int)
+            pconf = float(pb.conf[0])
+            plate_crop = pad_crop(img_bgr, px1, py1, px2, py2)
+            if plate_crop.size == 0: continue
+            ocr_t = do_ocr(plate_crop, ocr_name, fast_ocr, easy_ocr)
+            detections.append({
+                "conf": pconf, "ocr": ocr_t,
+                "vehicle_crop": None,
+                "plate_crop": plate_crop.copy(),
+                "source": "fallback"
+            })
+            cv2.rectangle(annotated, (px1, py1), (px2, py2), (0, 180, 255), 3)
+            cv2.putText(annotated, f"[FB] {ocr_t} {pconf:.2f}",
+                        (px1, py1-8), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 180, 255), 2)
 
-st.sidebar.markdown("### 🛠️ Enhancements")
-do_vehicle_det = st.sidebar.checkbox("🚚 Vehicle Detection", value=True)
-use_night_mode = st.sidebar.checkbox("🌙 Night Vision (CLAHE)", value=False)
+    inf_ms = (time.time() - t0) * 1000
+    return annotated, detections, inf_ms, len(v_boxes)
 
-st.sidebar.markdown("---")
-st.sidebar.info("""
-**KnightSight EdgeVision**
-- Engine: ONNX / PyTorch
-- OCR: Fast-Plate-OCR (SOTA)
-- Bonus: CLAHE Night Vision
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("## ⚙️ KnightSight Controls")
+    st.markdown("---")
+    engine = st.selectbox("🔧 Plate Model Engine", ["ONNX (Optimized)", "PyTorch (Original)"])
+    ocr_engine_name = st.selectbox("🔤 OCR Engine", ["Fast-Plate-OCR", "EasyOCR"])
+    conf_thr = st.slider("🎯 Plate Confidence", 0.10, 1.0, 0.40, 0.05)
+    use_night = st.checkbox("🌙 Night Vision (CLAHE)", value=False)
+    st.markdown("---")
+    st.markdown("""
+**Pipeline**
+1. 🚙 Detect vehicle (YOLO COCO)
+2. ✂️ Crop vehicle ROI
+3. 🔍 Detect plate in crop
+4. 🔤 OCR on plate
+5. 🔄 Fallback → full-image
 """)
 
-# --- Main Page ---
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    
-    # Determine model path based on selection
-    selected_path = ONNX_MODEL_PATH if "ONNX" in model_format else PT_MODEL_PATH
-    
-    # Load Models
-    plate_model, vehicle_model = load_models(selected_path)
-    reader = load_ocr()
-    
-    if plate_model and reader:
-        with st.spinner(f"Processing with {model_format}..."):
-            annotated_img, detections, inf_time = run_pipeline(
-                image, plate_model, vehicle_model, reader, conf_threshold, do_vehicle_det, use_night_mode
+# ── Load models once ──────────────────────────────────────────────────────────
+plate_model   = load_plate(ONNX_PATH if "ONNX" in engine else PT_PATH)
+vehicle_model = load_vehicle()
+fast_ocr      = load_fast_ocr()
+easy_ocr      = load_easy_ocr() if ocr_engine_name == "EasyOCR" else None
+
+# ── Title ─────────────────────────────────────────────────────────────────────
+st.markdown("# 🚗 KnightSight EdgeVision ANPR")
+st.markdown("<p style='color:#4a6fa5;margin-top:-12px'>Automatic Number Plate Recognition · Vehicle → Plate → OCR pipeline</p>", unsafe_allow_html=True)
+st.markdown("---")
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+img_tab, vid_tab = st.tabs(["📷  Image Inference", "🎬  Video Inference"])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# IMAGE TAB
+# ═══════════════════════════════════════════════════════════════════════════════
+with img_tab:
+    uploaded = st.file_uploader("Upload vehicle image", type=["jpg","jpeg","png"],
+                                label_visibility="collapsed")
+    if uploaded:
+        img_pil  = Image.open(uploaded)
+        img_bgr  = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        with st.spinner("Running ANPR pipeline…"):
+            annotated, dets, inf_ms, n_vehicles = run_pipeline(
+                img_bgr, plate_model, vehicle_model,
+                conf_thr, use_night, ocr_engine_name, fast_ocr, easy_ocr
             )
-        
-        # Layout: 2 Columns
-        col1, col2 = st.columns([2, 1])
-        
+
+        # ── Inference time banner ─────────────────────────────────────────────
+        fallback_used = any(d["source"] == "fallback" for d in dets)
+        st.markdown(f"""
+<div class="timer-banner">
+  <div>
+    <div class="timer-label">Inference Time</div>
+    <div class="timer-val">{inf_ms:.0f} ms</div>
+  </div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:48px;margin:0 8px"></div>
+  <div>
+    <div class="timer-label">Vehicles Detected</div>
+    <div class="timer-val" style="font-size:1.6rem">{n_vehicles}</div>
+  </div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:48px;margin:0 8px"></div>
+  <div>
+    <div class="timer-label">Plates Found</div>
+    <div class="timer-val" style="font-size:1.6rem">{len(dets)}</div>
+  </div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:48px;margin:0 8px"></div>
+  <div>
+    <div class="timer-label">Mode</div>
+    <div class="timer-val" style="font-size:1rem;margin-top:6px">{'🔄 Fallback' if fallback_used else '🚙 Vehicle'}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        # ── Layout: annotated + results ───────────────────────────────────────
+        col1, col2 = st.columns([3, 2])
+
         with col1:
-            st.markdown("### 🖼️ Detection Performance")
-            st.image(cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB), use_container_width=True)
-            
-            # Metrics Row
-            m_col1, m_col2, m_col3 = st.columns(3)
-            with m_col1:
-                st.metric("Latency", f"{inf_time:.1f} ms")
-            with m_col2:
-                st.metric("Detections", len(detections))
-            with m_col3:
-                st.metric("Precision", "High")
-        
+            st.markdown("<div class='sec-header'>Annotated Frame</div>", unsafe_allow_html=True)
+            st.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), use_container_width=True)
+
         with col2:
-            st.markdown("### 📝 Structured Results")
-            if not detections:
-                st.warning("No plates detected in frame.")
-            else:
-                for i, det in enumerate(detections):
-                    st.markdown(f"**Object #{i+1}**")
-                    st.image(cv2.cvtColor(det['Crop'], cv2.COLOR_BGR2RGB), width=200)
-                    st.markdown(f"<p class='ocr-result'>{det['OCR'] if det['OCR'] else '---'}</p>", unsafe_allow_html=True)
-                    st.json({
-                        "Confidence": f"{det['Conf']:.2f}",
-                        "OCR_Text": det['OCR']
-                    })
-                    st.divider()
+            st.markdown("<div class='sec-header'>Detections</div>", unsafe_allow_html=True)
+            if not dets:
+                st.warning("No plates detected.")
+            for i, d in enumerate(dets):
+                pill_cls = "pill-fallback" if d["source"] == "fallback" else "pill-vehicle"
+                pill_lbl = "🔄 Fallback" if d["source"] == "fallback" else "🚙 Via Vehicle"
+                st.markdown(f"""
+<div class="crop-card">
+  <span class="pill {pill_cls}">{pill_lbl}</span>
+  <b>Plate #{i+1}</b>
+""", unsafe_allow_html=True)
 
-else:
-    st.markdown("""
-    ### 👋 Welcome to the EdgeVision Pipeline
-    Please upload an image from the sidebar to begin.
-    
-    **System Capabilities:**
-    1. **Vehicle Localization**: Identifies cars, bikes, and trucks in the scene.
-    2. **Plate Detection**: High-precision localization of Indian standard plates.
-    3. **OCR Recognition**: Extracts alphanumerics under various lighting conditions.
-    4. **Optimized for Edge**: Runs on YOLOv11 nano architecture.
-    """)
-    
-    # Show sample if possible (optional)
-    # st.image("docs/visualizations/training_metrics.png", caption="Training Metrics", width=600)
+                # Show vehicle crop if available
+                if d["vehicle_crop"] is not None:
+                    st.markdown("<div class='sec-header'>Vehicle Crop</div>", unsafe_allow_html=True)
+                    st.image(cv2.cvtColor(d["vehicle_crop"], cv2.COLOR_BGR2RGB),
+                             use_container_width=True)
 
-footer_html = """<div style='text-align: center;'>
-<p>Developed for KnightSight Challenge | Powered by Ultralytics & Streamlit</p>
-</div>"""
-st.markdown(footer_html, unsafe_allow_html=True)
+                st.markdown("<div class='sec-header'>Plate Crop</div>", unsafe_allow_html=True)
+                st.image(cv2.cvtColor(d["plate_crop"], cv2.COLOR_BGR2RGB),
+                         use_container_width=True)
+
+                st.markdown(f"<div class='ocr-text'>{d['ocr'] or '???'}</div>", unsafe_allow_html=True)
+                st.caption(f"Confidence: {d['conf']:.2f}  ·  OCR: {ocr_engine_name}")
+                st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown("")
+
+    else:
+        st.markdown("""
+        <div style="text-align:center;padding:60px 0;color:#3a5570">
+          <div style="font-size:4rem">📷</div>
+          <div style="font-size:1.2rem;margin-top:12px">Upload an image to begin inference</div>
+          <div style="font-size:0.85rem;margin-top:6px;color:#2a4560">
+            Vehicle detect → Crop → Plate detect → OCR
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VIDEO TAB
+# ═══════════════════════════════════════════════════════════════════════════════
+with vid_tab:
+    vid_file = st.file_uploader("Upload video", type=["mp4","avi","mov","mkv"],
+                                label_visibility="collapsed")
+    sample_every = st.slider("Process every N frames", 1, 30, 5,
+                             help="Higher = faster but less coverage")
+
+    if vid_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(vid_file.read())
+            tmp_path = tmp.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps          = cap.get(cv2.CAP_PROP_FPS) or 25
+
+        st.info(f"Video: {total_frames} frames · {fps:.1f} fps · processing every {sample_every}th frame")
+
+        run_btn = st.button("▶️ Run Video Inference", type="primary", use_container_width=True)
+
+        if run_btn:
+            frame_display = st.empty()
+            metrics_row   = st.empty()
+            plates_area   = st.expander("📋 All detected plates", expanded=True)
+
+            all_plates = []
+            frame_idx  = 0
+            prog       = st.progress(0)
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: break
+                frame_idx += 1
+                prog.progress(min(frame_idx / total_frames, 1.0))
+
+                if frame_idx % sample_every != 0:
+                    continue
+
+                annotated, dets, inf_ms, n_v = run_pipeline(
+                    frame, plate_model, vehicle_model,
+                    conf_thr, use_night, ocr_engine_name, fast_ocr, easy_ocr
+                )
+
+                frame_display.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                                    caption=f"Frame {frame_idx}/{total_frames} · {inf_ms:.0f}ms",
+                                    use_container_width=True)
+
+                metrics_row.markdown(f"""
+<div class="timer-banner">
+  <div><div class="timer-label">Frame</div><div class="timer-val" style="font-size:1.4rem">{frame_idx}/{total_frames}</div></div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:40px;margin:0 8px"></div>
+  <div><div class="timer-label">Latency</div><div class="timer-val" style="font-size:1.4rem">{inf_ms:.0f}ms</div></div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:40px;margin:0 8px"></div>
+  <div><div class="timer-label">Vehicles</div><div class="timer-val" style="font-size:1.4rem">{n_v}</div></div>
+  <div style="border-left:1px solid rgba(255,255,255,0.1);height:40px;margin:0 8px"></div>
+  <div><div class="timer-label">Plates (frame)</div><div class="timer-val" style="font-size:1.4rem">{len(dets)}</div></div>
+</div>
+""", unsafe_allow_html=True)
+
+                for d in dets:
+                    all_plates.append({"frame": frame_idx, **d})
+
+            cap.release()
+            os.unlink(tmp_path)
+            prog.empty()
+
+            # Summary
+            with plates_area:
+                st.markdown(f"**Total plates detected across all frames: {len(all_plates)}**")
+                for i, d in enumerate(all_plates):
+                    cols = st.columns([1, 2, 3])
+                    cols[0].caption(f"Frame {d['frame']}")
+                    cols[1].image(cv2.cvtColor(d["plate_crop"], cv2.COLOR_BGR2RGB))
+                    cols[2].markdown(f"<div class='ocr-text' style='font-size:1.2rem'>{d['ocr'] or '???'}</div>",
+                                     unsafe_allow_html=True)
+                    cols[2].caption(f"Conf {d['conf']:.2f} · {d['source']}")
+    else:
+        st.markdown("""
+        <div style="text-align:center;padding:60px 0;color:#3a5570">
+          <div style="font-size:4rem">🎬</div>
+          <div style="font-size:1.2rem;margin-top:12px">Upload a video to run inference</div>
+          <div style="font-size:0.85rem;margin-top:6px;color:#2a4560">
+            Processes sampled frames · shows live annotated feed
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div style='text-align:center;color:#2a4560;font-size:0.78rem;margin-top:32px;padding:16px;
+border-top:1px solid rgba(255,255,255,0.05)'>
+KnightSight EdgeVision ANPR · Ultralytics YOLO + Fast-Plate-OCR / EasyOCR · Streamlit
+</div>""", unsafe_allow_html=True)

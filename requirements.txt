@@ -1,6 +1,7 @@
 streamlit
 ultralytics
 fast-plate-ocr[onnx]
+easyocr
 opencv-python
 pillow
 numpy
