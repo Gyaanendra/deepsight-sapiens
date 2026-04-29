@@ -578,30 +578,3 @@ pip install -r requirements.txt
 python -m pytest tests/       # run tests
 streamlit run app.py          # launch dashboard
 ```
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgements
-
-- [**Ultralytics**](https://ultralytics.com) — YOLOv11 framework
-- [**Fast-Plate-OCR**](https://github.com/ankandrew/fast-plate-ocr) — Lightweight plate OCR engine
-- [**OpenRouter**](https://openrouter.ai) — GPT-4o-mini API access for fallback OCR
-- [**Streamlit**](https://streamlit.io) — Interactive dashboard framework
-- [**Hugging Face**](https://huggingface.co) — Model hosting & Spaces deployment
-- **KnightSight EdgeVision Challenge** — Competition organizers
-
----
-
-<div align="center">
-
-**Built with ❤️ for the KnightSight EdgeVision Challenge**
-
-*Ultralytics YOLO · Fast-Plate-OCR · GPT-4o-mini · Streamlit · ONNX Runtime*
-
-</div>
